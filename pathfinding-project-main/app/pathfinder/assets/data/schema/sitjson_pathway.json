@@ -1,0 +1,15 @@
+{
+  "title": "sitJSON Pathway",
+  "type": "object",
+  "required": ["level", "indoor"],
+  "properties": {
+    "level": {
+      "type": "string",
+      "pattern": "^[0-9]+-{0,1}[0-9]*$"
+    },
+    "indoor": {
+      "type": "string",
+      "enum": ["corridor"]
+    }
+  }
+}

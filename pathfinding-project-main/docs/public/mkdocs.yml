@@ -1,0 +1,6 @@
+site_name: Pathfinder Documentation
+plugins:
+  - json-schema: 
+json_schema: "../../data/schema/sitjson_feature.json"
+markdown_tag: "#JsonSchema#"
+theme: readthedocs

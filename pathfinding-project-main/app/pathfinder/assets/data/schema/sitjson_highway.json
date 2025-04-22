@@ -1,0 +1,19 @@
+{
+  "title": "sitJSON Highway",
+  "type": "object",
+  "required": ["highway", "level", "traversal"],
+  "properties": {
+    "level": {
+      "type": "string",
+      "pattern": "^[0-9]+-{0,1}[0-9]*$"
+    },
+    "highway": {
+      "type": "string",
+      "enum": ["elevator", "steps", "service"]
+    },
+    "traversal": {
+      "type": "string",
+      "enum": ["horizontal", "vertical", "spiral"]
+    }
+  }
+}

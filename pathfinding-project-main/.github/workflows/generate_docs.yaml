@@ -1,0 +1,34 @@
+name: Build Documentation
+run-name: Build mkdocs
+on: [push]
+jobs:
+  build_docs:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v3
+      - name: Check for updated schemas
+        id: check-for-updated-schemas
+        uses: tj-actions/changed-files@v41
+        with:
+          files: |
+            app/pathfinder/assets/data/schema/**.json
+      - if: steps.check-for-updated-schemas.outputs.any_changed == 'true'
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11.6'
+          cache: 'pip'
+      - if: steps.check-for-updated-schemas.outputs.any_changed == 'true'
+        run: |
+          sudo pip3 install PyYAML
+          python -u .github/workflows/generate_docs.py
+      - if: steps.check-for-updated-schemas.outputs.any_changed == 'true'
+        name: Push to github
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add .
+          git commit -m "Updated mkdocs"
+          git push

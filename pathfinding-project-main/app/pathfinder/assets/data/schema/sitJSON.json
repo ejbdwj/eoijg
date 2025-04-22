@@ -1,0 +1,8 @@
+{
+    "title": "sitJSON",
+    "oneOf": [
+      { "$ref": "./sitjson_feature.json" },
+      { "$ref": "./sitjson_featurecollection.json" }
+    ]
+  }
+  

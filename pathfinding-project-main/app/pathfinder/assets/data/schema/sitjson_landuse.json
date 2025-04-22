@@ -1,0 +1,26 @@
+{
+  "title": "sitJSON Landuse",
+  "type": "object",
+  "required": ["level", "landuse"],
+  "properties": {
+    "level": {
+      "type": "string",
+      "pattern": "^[0-9]+-{0,1}[0-9]*$"
+    },
+    "name": {
+      "type": "string"
+    },
+    "landuse": {
+      "type": "string",
+      "enum": [
+        "void",
+        "void_deck",
+        "grass",
+        "garden",
+        "water_feature",
+        "parking",
+        "drain"
+      ]
+    }
+  }
+}

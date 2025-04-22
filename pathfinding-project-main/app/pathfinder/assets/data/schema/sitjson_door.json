@@ -1,0 +1,19 @@
+{
+  "title": "sitJSON Door",
+  "type": "object",
+  "required": ["access", "door", "level"],
+  "properties": {
+    "level": {
+      "type": "string",
+      "pattern": "^[0-9]+-{0,1}[0-9]*$"
+    },
+    "door": {
+      "type": "string",
+      "enum": ["yes", "no"]
+    },
+    "access": {
+      "type": "string",
+      "enum": ["yes", "no", "private"]
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "title": "sitJSON Amenity",
+  "type": "object",
+  "required": ["level", "amenity"],
+  "properties": {
+    "level": {
+      "type": "string",
+      "pattern": "^[0-9]+-{0,1}[0-9]*$"
+    },
+    "name": {
+      "type": "string"
+    },
+    "indoor": {
+      "type": "string",
+      "enum": ["area", "room"]
+    },
+    "amenity": {
+      "type": "string",
+      "enum": [
+        "arts",
+        "bench",
+        "bookshop",
+        "canteen",
+        "cca",
+        "classroom",
+        "concourse",
+        "control_room",
+        "counselling",
+        "events_venue",
+        "grandstand",
+        "ict_helpdesk",
+        "server_room",
+        "lab",
+        "lab_prep",
+        "library",
+        "lobby",
+        "lounge",
+        "office",
+        "shower",
+        "sick_bay",
+        "sports",
+        "staff",
+        "storage",
+        "study_corner",
+        "toilets",
+        "unk",
+        "pizza_parlour"
+      ]
+    }
+  }
+}

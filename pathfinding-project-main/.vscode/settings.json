@@ -1,0 +1,11 @@
+{
+    "json.schemas": [
+        {
+            "fileMatch": [
+                "app/pathfinder/assets/data/josm/main.geojson"
+            ],
+            "url": "./app/pathfinder/assets/data/schema/sitJSON.json"
+        }
+    ],
+    "cmake.configureOnOpen": false,
+}

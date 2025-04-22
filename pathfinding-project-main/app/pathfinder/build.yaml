@@ -1,0 +1,15 @@
+# Read about `build.yaml` at https://pub.dev/packages/build_config
+targets:
+  $default:
+    builders:
+      pathfinder:property_multiply:
+        generate_for:
+          - lib/dat/*.dart
+builders:
+  property_multiply:
+    import: "./lib/gen/builder.dart"
+    builder_factories: ["multiplyBuilder"]
+    build_extensions: {".dart": ["g.part"]}
+    auto_apply: dependents
+    build_to: cache
+    applies_builders: ["source_gen:combining_builder"]

@@ -1,0 +1,53 @@
+{
+    "title": "sitJSON Feature",
+    "type": "object",
+    "required": ["type", "properties", "geometry"],
+    "properties": {
+      "type": {
+        "type": "string",
+        "enum": ["Feature"]
+      },
+      "id": {
+        "oneOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "string"
+          }
+        ]
+      },
+      "properties": {
+        "oneOf": [
+          { "type": "null" },
+          { "$ref": "./sitjson_amenity.json" },
+          { "$ref": "./sitjson_utility.json" },
+          { "$ref": "./sitjson_landuse.json" },
+          { "$ref": "./sitjson_pathway.json" },
+          { "$ref": "./sitjson_door.json" },
+          { "$ref": "./sitjson_highway.json" },
+          { "$ref": "./sitjson_wall.json" }
+        ]
+      },
+      "geometry": {
+        "oneOf": [
+          { "type": "null" },
+          { "$ref": "./geojson_point.json" },
+          { "$ref": "./geojson_linestring.json" },
+          { "$ref": "./geojson_polygon.json" },
+          { "$ref": "./geojson_multipoint.json" },
+          { "$ref": "./geojson_multilinestring.json" },
+          { "$ref": "./geojson_multipolygon.json" },
+          { "$ref": "./geojson_geometrycollection.json" }
+        ]
+      },
+      "bbox": {
+        "type": "array",
+        "minItems": 4,
+        "items": {
+          "type": "number"
+        }
+      }
+    }
+  }
+  

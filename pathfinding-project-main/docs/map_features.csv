@@ -1,0 +1,50 @@
+﻿facility_name,tag
+AC Ledge,utility=ac_ledge
+AHU,utility=air_handling_unit
+CDR,utility=coaxial_distribution_room
+ER,utility=electrical_room
+Hose Riser,utility=hose_riser
+LAN,utility=server_room
+Service Duct,utility=service_duct
+Switch Room,utility=switch_room
+TER,utility=telecom_equipment_room
+WSM,utility=water_supply_main
+Pump Room,utility=pump_room
+,
+XX-XX,amenity=classroom
+__ Storage,amenity=storage
+Block X LX Toilet (Male/Female/Handicap),amenity=toilets
+Block X LX Lift Lobby,amenity=lobby
+___ Toilet (Male/Female/Handicap),amenity=toilets
+___ Lab X,amenity=lab
+___ Prep Room,amenity=lab_prep
+Instrumental Room,amenity=lab_prep
+____ Court,amenity=sports
+____ Office,amenity=office
+"Seminar Room XX / (theattrette, audi, hall)",amenity=events_venue
+Study Corner,amenity=study_corner
+(Arts Rooms),amenity=arts
+(Library),amenity=library
+ICT Helpdesk,amenity=ict_helpdesk
+Control Room,amenity=control_room
+(CCA Rooms),amenity=cca
+HOD X / anything staff restricted,amenity=staff
+College/Pastoral Counselling Room,amenity=counselling
+Bookshop,amenity=bookshop
+Canteen/Canteen Vendors,amenity=canteen
+Sick Bay,amenity=sick_bay
+Gym Room,amenity=sports
+Student Lounge,amenity=lounge
+Grandstand,amenity=grandstand
+Concourse,amenity=concourse
+,
+Block X Elevator,highway=elevator
+Block X/___ (Front/Rear/Left/Right) Stairway (Connector) / Ladder to Roof,highway=steps
+,
+Void,landuse=void
+Void Deck,landuse=void_deck
+Foilage,landuse=grass
+Garden,landuse=garden
+Water Feature,landuse=water_feature
+Parking,landuse=parking
+Drain,landuse=drain

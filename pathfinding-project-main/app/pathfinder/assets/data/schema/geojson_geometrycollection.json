@@ -1,0 +1,31 @@
+{
+  "title": "GeoJSON GeometryCollection",
+  "type": "object",
+  "required": ["type", "geometries"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["GeometryCollection"]
+    },
+    "geometries": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "$ref": "./geojson_point.json" },
+          { "$ref": "./geojson_linestring.json" },
+          { "$ref": "./geojson_polygon.json" },
+          { "$ref": "./geojson_multipoint.json" },
+          { "$ref": "./geojson_multilinestring.json" },
+          { "$ref": "./geojson_multipolygon.json" }
+        ]
+      }
+    },
+    "bbox": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "number"
+      }
+    }
+  }
+}

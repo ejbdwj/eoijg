@@ -1,0 +1,34 @@
+{
+  "title": "sitJSON Utility",
+  "type": "object",
+  "required": ["level", "utility"],
+  "properties": {
+    "level": {
+      "type": "string",
+      "pattern": "^[0-9]+-{0,1}[0-9]*$"
+    },
+    "name": {
+      "type": "string"
+    },
+    "indoor": {
+      "type": "string",
+      "enum": ["area", "room"]
+    },
+    "utility": {
+      "type": "string",
+      "enum": [
+        "ac_ledge",
+        "air_handling_unit",
+        "coaxial_distribution_room",
+        "electrical_riser",
+        "hose_riser",
+        "service_duct",
+        "switch_room",
+        "telecom_equipment_room",
+        "water_supply_main",
+        "pump_room",
+        "lan_riser"
+      ]
+    }
+  }
+}
