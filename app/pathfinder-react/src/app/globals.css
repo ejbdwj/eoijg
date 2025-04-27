@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+@plugin "daisyui" {
+  themes: dracula --default;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}

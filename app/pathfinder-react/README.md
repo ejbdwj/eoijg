@@ -34,3 +34,22 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+
+
+- Event scheduler
+- basic user settings
+- publishing newsletters to the user
+- Emergency/rain
+- pathfindin pathfinding pathfinding
+- checkin for goodies
+- Points of Interest directory 
+
+
+
+Deep integration between the map and your event scheduler so visitors can see sessions, RSVP/check in, and get turn-by-turn guidance.
+
+Robust notification channels for emergencies, weather/rain alerts, session reminders, and personalized newsletters.
+
+User account and preference management for profiles, accessibility options, language, and privacy settings.
+
+Analytics and insights to track foot-traffic heat maps, event attendance, and overall engagement.
