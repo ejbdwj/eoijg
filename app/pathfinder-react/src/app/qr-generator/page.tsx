@@ -3,8 +3,10 @@
 import * as React from 'react';
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { Map, Marker, NavigationControl } from '@vis.gl/react-maplibre';
+import { Map, Marker, NavigationControl, Source, Layer } from '@vis.gl/react-maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import Image from 'next/image';
+import type { FeatureCollection } from 'geojson';
 
 // Define the location feature interface
 interface LocationFeature {
@@ -22,8 +24,34 @@ interface FeatureProperties {
   amenity?: string;
   highway?: string;
   utility?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
+
+// Define a more specific type for GeoJSON features if possible
+interface GeoJsonGeometry {
+  type: string;
+  coordinates: unknown; // Changed any to unknown
+}
+
+interface GeoJsonFeature {
+  type: "Feature";
+  geometry: GeoJsonGeometry;
+  properties: FeatureProperties;
+}
+
+// Helper to calculate centroid of a polygon ring
+const getCentroid = (ring: Array<[number, number]>): [number, number] | null => {
+  if (!ring || ring.length === 0) return null;
+  let sumX = 0;
+  let sumY = 0;
+  for (const point of ring) {
+    if (Array.isArray(point) && point.length >= 2) {
+      sumX += point[0];
+      sumY += point[1];
+    }
+  }
+  return ring.length > 0 ? [sumX / ring.length, sumY / ring.length] : null;
+};
 
 export default function QRGenerator() {
   const [latitude, setLatitude] = useState("1.3067");
@@ -40,10 +68,13 @@ export default function QRGenerator() {
     longitude: 103.7695, 
     zoom: 18 
   });
+  const [geoJsonMapData, setGeoJsonMapData] = useState<FeatureCollection | null>(null);
+  const [loadingGeoJsonMapData, setLoadingGeoJsonMapData] = useState(true);
 
   // Load location data from GeoJSON
   useEffect(() => {
     setLoadingLocations(true);
+    setLoadingGeoJsonMapData(true);
     
     fetch('/data/main.geojson')
       .then(response => {
@@ -53,10 +84,13 @@ export default function QRGenerator() {
         return response.json();
       })
       .then(jsonData => {
+        setGeoJsonMapData(jsonData as FeatureCollection);
+        setLoadingGeoJsonMapData(false);
+
         // Extract named locations from GeoJSON features
         const extractedLocations: LocationFeature[] = [];
         
-        jsonData.features.forEach((feature: any, index: number) => {
+        jsonData.features.forEach((feature: GeoJsonFeature, index: number) => {
           const props = feature.properties as FeatureProperties;
           
           // Only process features with names
@@ -75,22 +109,31 @@ export default function QRGenerator() {
             let longitude = 0;
             
             if (feature.geometry.type === 'Point') {
-              [longitude, latitude] = feature.geometry.coordinates;
+              const pointCoords = feature.geometry.coordinates as [number, number];
+              [longitude, latitude] = pointCoords;
             } else if (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon') {
               // For polygons, calculate centroid
               // Simple approach: use first coordinate
               if (feature.geometry.type === 'Polygon') {
-                const coords = feature.geometry.coordinates[0];
-                [longitude, latitude] = coords[0];
-              } else {
-                const coords = feature.geometry.coordinates[0][0];
-                [longitude, latitude] = coords[0];
+                const polyCoords = feature.geometry.coordinates as [[[number, number]]];
+                const centroid = getCentroid(polyCoords[0]);
+                if (centroid) {
+                  [longitude, latitude] = centroid;
+                }
+              } else { // MultiPolygon
+                const multiPolyCoords = feature.geometry.coordinates as [[[[number, number]]]];
+                const centroid = getCentroid(multiPolyCoords[0][0]);
+                if (centroid) {
+                  [longitude, latitude] = centroid;
+                }
               }
             } else if (feature.geometry.type === 'LineString') {
               // For lines, use middle point
-              const coords = feature.geometry.coordinates;
-              const midIndex = Math.floor(coords.length / 2);
-              [longitude, latitude] = coords[midIndex];
+              const lineCoords = feature.geometry.coordinates as Array<[number, number]>;
+              if (lineCoords && lineCoords.length > 0) {
+                const midIndex = Math.floor(lineCoords.length / 2);
+                [longitude, latitude] = lineCoords[midIndex];
+              }
             }
             
             extractedLocations.push({
@@ -113,6 +156,7 @@ export default function QRGenerator() {
       .catch(error => {
         console.error('Error loading location data:', error);
         setLoadingLocations(false);
+        setLoadingGeoJsonMapData(false);
       });
   }, []);
 
@@ -152,10 +196,11 @@ export default function QRGenerator() {
   // Generate QR code using a public API
   const generateQRCode = () => {
     // Create the location data object
-    const locationData = `${latitude},${longitude},${level}`;
+    const appDomain = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+    const locationUrl = `${appDomain}/?x=${longitude}&y=${latitude}&l=${level}`;
     
     // URL encode the data for the API
-    const encodedData = encodeURIComponent(locationData);
+    const encodedData = encodeURIComponent(locationUrl);
     
     // Use the QRServer API to generate a QR code
     const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodedData}`;
@@ -167,22 +212,22 @@ export default function QRGenerator() {
   // Generate QR code when component mounts and when inputs change
   useEffect(() => {
     generateQRCode();
-  }, [latitude, longitude, level]);
+  }, [latitude, longitude, level, generateQRCode]);
 
   return (
-    <div className="min-h-screen bg-base-200 flex flex-col">
-      <main className="flex-grow container mx-auto px-4 py-8">
-        <div className="text-center mb-10">
-          <h2 className="text-3xl font-bold text-base-content mb-4">Location QR Code Generator</h2>
-          <p className="text-base-content/80 max-w-2xl mx-auto">
+    <div className="flex flex-col min-h-screen bg-base-200">
+      <main className="container flex-grow px-4 py-8 mx-auto">
+        <div className="mb-10 text-center">
+          <h2 className="mb-4 text-3xl font-bold text-base-content">Location QR Code Generator</h2>
+          <p className="mx-auto max-w-2xl text-base-content/80">
             Generate QR codes with location data to test the scanning functionality.
           </p>
         </div>
 
         <div className="flex flex-col gap-8">
           {/* Map for visualization */}
-          <div className="card bg-base-100 shadow-xl overflow-hidden">
-            <div className="card-body p-4">
+          <div className="overflow-hidden shadow-xl card bg-base-100">
+            <div className="p-4 card-body">
               <h3 className="card-title">Select Location on Map</h3>
               <div className="h-[300px] w-full rounded-lg overflow-hidden">
                 <Map
@@ -196,6 +241,28 @@ export default function QRGenerator() {
                 >
                   <NavigationControl position="top-right" />
                   
+                  {/* Display GeoJSON features on the map */}
+                  {!loadingGeoJsonMapData && geoJsonMapData && (
+                    <Source id="geojson-map-source" type="geojson" data={geoJsonMapData}>
+                      <Layer 
+                        id="map-fill-layer" 
+                        type="fill" 
+                        paint={{
+                          'fill-color': '#3b82f6', // Default blue color
+                          'fill-opacity': 0.5
+                        }}
+                      />
+                      <Layer
+                        id="map-line-layer"
+                        type="line"
+                        paint={{
+                          'line-color': '#2563eb', // Darker blue for outlines
+                          'line-width': 1
+                        }}
+                      />
+                    </Source>
+                  )}
+                  
                   {/* Current selected marker */}
                   <Marker
                     latitude={parseFloat(latitude)}
@@ -207,9 +274,9 @@ export default function QRGenerator() {
             </div>
           </div>
           
-          <div className="flex flex-col md:flex-row gap-8 items-start justify-center">
+          <div className="flex flex-col gap-8 justify-center items-start md:flex-row">
             {/* Form */}
-            <div className="card bg-base-100 shadow-xl w-full md:w-1/2 max-w-md">
+            <div className="w-full max-w-md shadow-xl card bg-base-100 md:w-1/2">
               <div className="card-body">
                 <h3 className="card-title">Enter Location</h3>
                 
@@ -219,13 +286,13 @@ export default function QRGenerator() {
                     <span className="label-text">Named Location</span>
                   </label>
                   {loadingLocations ? (
-                    <div className="flex items-center gap-2">
+                    <div className="flex gap-2 items-center">
                       <span className="loading loading-spinner loading-sm"></span>
                       <span>Loading locations...</span>
                     </div>
                   ) : (
                     <select 
-                      className="select select-bordered w-full" 
+                      className="w-full select select-bordered" 
                       value={selectedLocationId} 
                       onChange={handleLocationSelect}
                     >
@@ -309,7 +376,7 @@ export default function QRGenerator() {
                 
                 <div className="mt-4">
                   <button 
-                    className="btn btn-primary w-full" 
+                    className="w-full btn btn-primary" 
                     onClick={generateQRCode}
                   >
                     Generate QR Code
@@ -319,21 +386,26 @@ export default function QRGenerator() {
             </div>
             
             {/* QR Code Display */}
-            <div className="card bg-base-100 shadow-xl w-full md:w-1/2 max-w-md">
-              <div className="card-body items-center text-center">
+            <div className="w-full max-w-md shadow-xl card bg-base-100 md:w-1/2">
+              <div className="items-center text-center card-body">
                 <h3 className="card-title">Your QR Code</h3>
                 
                 {qrSvg && (
-                  <div className="p-4 bg-white rounded-lg mb-2">
-                    <img src={qrSvg} alt="QR Code" width={250} height={250} />
+                  <div className="p-4 mb-2 bg-white rounded-lg">
+                    <Image 
+                      src={qrSvg} 
+                      alt="QR Code" 
+                      width={250} 
+                      height={250} 
+                    />
                   </div>
                 )}
                 
                 <div className="text-sm opacity-70">
-                  Scan this QR code with the app's scanner to see your location on the map
+                  Scan this QR code with the app&apos;s scanner to see your location on the map
                 </div>
                 
-                <div className="card-actions mt-4">
+                <div className="mt-4 card-actions">
                   <Link href="/" className="btn btn-outline">
                     Back to Map
                   </Link>
@@ -344,7 +416,7 @@ export default function QRGenerator() {
         </div>
       </main>
       
-      <footer className="footer footer-center p-6 bg-base-300 text-base-content">
+      <footer className="p-6 footer footer-center bg-base-300 text-base-content">
         <div>
           <p>Use this tool to generate QR codes for location testing</p>
         </div>

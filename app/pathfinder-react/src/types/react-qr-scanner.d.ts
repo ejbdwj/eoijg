@@ -6,7 +6,7 @@ declare module 'react-qr-scanner' {
     width?: number;
     height?: number;
     frameRate?: number;
-    [key: string]: any;
+    [key: string]: unknown;
   }
 
   export interface QrReaderProps {
@@ -14,7 +14,7 @@ declare module 'react-qr-scanner' {
     facingMode?: string;
     resolution?: number;
     onError?: (error: Error) => void;
-    onScan?: (data: { text: string } | null) => void;
+    onScan?: (data: unknown) => void;
     style?: object;
     className?: string;
     constraints?: {

@@ -25,6 +25,7 @@ export default function HTML5QRScanner({
   const scannerContainerId = "html5-qr-scanner";
   const [isScannerReady, setScannerReady] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+  const hasProcessedScanRef = useRef(false); // Flag to ensure single processing
 
   // Safely stop the scanner
   const safelyStopScanner = async () => {
@@ -34,7 +35,7 @@ export default function HTML5QRScanner({
         console.log("Scanner stopped successfully");
       } catch (error) {
         // Just log the error but don't propagate it as it's not critical
-        console.log("Note: Scanner was already stopped or not running");
+        console.log("Note: Scanner was already stopped or not running", error);
       } finally {
         setIsScanning(false);
       }
@@ -82,48 +83,78 @@ export default function HTML5QRScanner({
   const startScanner = async () => {
     if (!scannerRef.current || isScanning) return;
 
+    hasProcessedScanRef.current = false; // Reset flag when starting a new scan session
+
     const qrCodeSuccessCallback = async (decodedText: string) => {
+      if (hasProcessedScanRef.current) {
+        // console.log("HTML5 scanner: Scan already processed, ignoring subsequent detection.");
+        return; // Ignore if already processed
+      }
+
       try {
-        // Parse QR code text
-        let coordinates;
         const trimmedText = decodedText.trim();
-        
+
+        // Attempt to parse as app-specific URL first
+        try {
+          const url = new URL(trimmedText);
+          // Determine the app's hostname. Default to localhost if env var not set.
+          const appHostname = (new URL(process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000')).hostname;
+
+          if (url.hostname === appHostname && url.pathname === '/') { // Ensure it's the root path with query params
+            const x = url.searchParams.get('x');
+            const y = url.searchParams.get('y');
+            const l = url.searchParams.get('l');
+
+            if (x && y && l) {
+              const longitude = parseFloat(x);
+              const latitude = parseFloat(y);
+              const level = parseInt(l, 10);
+
+              if (!isNaN(longitude) && !isNaN(latitude) && !isNaN(level)) {
+                hasProcessedScanRef.current = true;
+                onLocationDetected({ latitude, longitude, level });
+                await safelyStopScanner();
+                console.log("HTML5 scanner detected app URL location:", { latitude, longitude, level });
+                return; // Successfully processed as app URL
+              }
+            }
+          }
+        } catch (e) {
+          // Not a valid URL, or not an app URL, or parsing failed. Continue to other formats.
+          console.log("Scanned text not a matching app URL, trying other formats...", e);
+        }
+
+        // Fallback to existing parsing logic (JSON or comma-separated)
+        let coordinates;
         if (trimmedText.startsWith('{')) {
-          // Parse as JSON
           coordinates = JSON.parse(trimmedText);
         } else {
-          // Parse as comma-separated values
           const parts = trimmedText.split(',');
           if (parts.length >= 2) {
             coordinates = {
               latitude: parseFloat(parts[0]),
               longitude: parseFloat(parts[1]),
-              level: parts.length > 2 ? parseInt(parts[2]) : currentFloor
+              level: parts.length > 2 ? parseInt(parts[2], 10) : currentFloor
             };
           }
         }
         
         if (coordinates && !isNaN(coordinates.latitude) && !isNaN(coordinates.longitude)) {
-          // First set the coordinates
+          hasProcessedScanRef.current = true; 
           const location = {
             latitude: coordinates.latitude,
             longitude: coordinates.longitude,
             level: coordinates.level || currentFloor
           };
-          
-          console.log("HTML5 scanner detected location:", location);
-          
-          // Ensure we call the callback before stopping the scanner
+          console.log("HTML5 scanner detected legacy format location:", location);
           onLocationDetected(location);
-          
-          // Then safely stop the scanner 
           await safelyStopScanner();
         } else {
-          onError("Invalid coordinates format in QR code");
+          // onError("Invalid coordinates format in QR code"); // Potentially call onError if no format matches
         }
       } catch (error) {
-        console.error("QR scan error:", error);
-        onError("Could not parse QR code data. Try manual input instead.");
+        console.error("QR scan processing error:", error);
+        // onError("Could not parse QR code data."); // Potentially call onError
       }
     };
 
@@ -139,7 +170,7 @@ export default function HTML5QRScanner({
       try {
         await scannerRef.current.stop();
       } catch (e) {
-        // Ignore "not running" errors - this is expected
+        console.log("Note: Scanner was already stopped or not running", e);
       }
 
       await scannerRef.current.start(
@@ -161,10 +192,11 @@ export default function HTML5QRScanner({
 
   // Effect to start scanner once it's ready
   useEffect(() => {
-    if (isScannerReady && !isScanning) {
+    if (isScannerReady && !isScanning && !hasProcessedScanRef.current) {
+      // console.log("Auto-starting scanner logic triggered."); // Optional: for debugging
       startScanner();
     }
-  }, [isScannerReady]);
+  }, [isScannerReady, isScanning]); // Dependencies: run if scanner readiness or scanning state changes
 
   return (
     <div className="flex flex-col items-center">
@@ -172,14 +204,14 @@ export default function HTML5QRScanner({
       
       {!isScanning && isScannerReady && (
         <button 
-          className="btn btn-primary mt-4" 
+          className="mt-4 btn btn-primary" 
           onClick={startScanner}
         >
           Restart Camera
         </button>
       )}
       
-      <div className="mt-3 text-center text-xs text-base-content/70">
+      <div className="mt-3 text-xs text-center text-base-content/70">
         {isScanning ? (
           <p>Position QR code in the scanning area</p>
         ) : (

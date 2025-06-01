@@ -1,8 +1,6 @@
 import './globals.css'
 import type { Metadata } from 'next'
 import { AppProvider } from '@/utils/AppContext'
-import AuthStatus from '@/components/AuthStatus'
-import Providers from '@/components/Providers'
 import Link from 'next/link'
 
 export const metadata: Metadata = {
@@ -16,38 +14,25 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en">
+    <html lang="en" data-theme="imageInspiredDark">
       <body>
-        <Providers>
           <AppProvider>
-            <div className="min-h-screen flex flex-col">
-              <header className="bg-base-100 shadow-md py-2 px-4 border-b border-base-300 sticky top-0 z-30">
-                <div className="container mx-auto flex justify-between items-center">
-                  <div className="flex items-center gap-3">
-                    <div className="avatar placeholder">
-                      <div className="bg-primary text-primary-content rounded-full w-10">
-                        <span className="text-xl font-bold">PF</span>
-                      </div>
+            <div className="drawer lg:drawer-open">
+              <div className="flex flex-col min-h-screen drawer-content">
+                <header className="sticky top-0 z-30 px-2 h-12 border-b shadow-md bg-base-100 border-base-300">
+                  <div className="flex items-center h-full">
+                    <div className="flex items-center lg:hidden">
+                      <span className="ml-2 text-lg font-semibold">NUSH Pathfinder</span>
                     </div>
-                    <h1 className="text-2xl font-bold text-primary">Pathfinding Project</h1>
+                    <Link href="/" className="hidden text-xl normal-case btn btn-ghost lg:flex">NUSH Pathfinder</Link>
                   </div>
-                  <div className="flex items-center gap-4">
-                    <nav className="hidden md:flex gap-4">
-                      <Link href="/" className="btn btn-link text-primary no-underline hover:underline">Home</Link>
-                      <Link href="/about" className="btn btn-link text-base-content no-underline hover:underline">About</Link>
-                      <Link href="/documentation" className="btn btn-link text-base-content no-underline hover:underline">Documentation</Link>
-                      <Link href="/admin" className="btn btn-link text-base-content no-underline hover:underline">Admin</Link>
-                    </nav>
-                    <AuthStatus />
-                  </div>
-                </div>
-              </header>
-              <main className="flex-grow">
-        {children}
-              </main>
+                </header>
+                <main className="flex-grow p-0">
+                  {children}
+                </main>
+              </div>
             </div>
           </AppProvider>
-        </Providers>
       </body>
     </html>
   )

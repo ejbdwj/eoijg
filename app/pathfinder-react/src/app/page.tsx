@@ -1,23 +1,22 @@
 "use client"
 
-import Image from "next/image";
 import Link from "next/link";
 import * as React from 'react';
-import { Map, NavigationControl, Source, Layer, Popup, Marker } from '@vis.gl/react-maplibre';
-import type { MapLayerMouseEvent } from '@vis.gl/react-maplibre';
-import type { Feature, FeatureCollection, Geometry, GeoJsonProperties } from 'geojson';
+import { Map, NavigationControl, Source, Layer, Popup, Marker, MapRef } from '@vis.gl/react-maplibre';
+import type { MapLayerMouseEvent } from '@vis.gl/react-maplibre'; // removed ViewState for eslint
+import type { Feature, FeatureCollection, Geometry } from 'geojson';
 import type { FilterSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { useEffect, useState } from 'react';
-import FillLayer from '@vis.gl/react-maplibre';
+import { useEffect, useState, Suspense } from 'react';
 import { useAppContext, Event as AppEvent } from '@/utils/AppContext';
 import QRScannerModal from './qr-scanner-modal';
+import { useSearchParams, useRouter } from 'next/navigation';
 
 // Define custom GeoJSON feature with floor property
 interface FloorFeature extends Feature {
   properties: {
     level?: string;
-    [key: string]: any;
+    [key: string]: unknown;
   };
 }
 
@@ -31,6 +30,7 @@ interface HoverInfo {
   longitude: number;
   latitude: number;
   featureName: string;
+  level?: string;
 }
 
 // Interface for user location from QR code
@@ -40,8 +40,17 @@ interface UserLocation {
   level: number;
 }
 
-export default function Home() {
+interface ToastMessage {
+  id: string;
+  message: string;
+  type: 'info' | 'success' | 'error' | 'warning';
+}
+
+// New component to hold the original content of Home
+function HomePageContent() {
   const { visualSettings, events } = useAppContext();
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const [data, setData] = useState<FloorGeoJSON | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [currentFloor, setCurrentFloor] = useState(1);
@@ -57,6 +66,156 @@ export default function Home() {
   // QR Scanner states
   const [isScanning, setIsScanning] = useState(false);
   const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
+  const [isFabOpen, setIsFabOpen] = useState(false);
+  const [mapLoaded, setMapLoaded] = useState(false);
+  // const [showLocationDetectedAlert, setShowLocationDetectedAlert] = useState(false); commented out for eslint
+
+  // New state for important amenities filter
+  const [showImportantAmenitiesOnly, setShowImportantAmenitiesOnly] = useState(true); // eslint-disable-line
+
+  // Search State
+  const [searchQuery, setSearchQuery] = useState('');
+  interface SearchResultItem {
+    id: string;
+    type: 'event' | 'location';
+    name: string;
+    level: number;
+    coordinates: { latitude: number; longitude: number };
+    original: AppEvent | FloorFeature; 
+  }
+  const [searchResults, setSearchResults] = useState<SearchResultItem[]>([]);
+  
+  const mapRef = React.useRef<MapRef>(null); 
+
+  // Define important names for the new filter
+  const importantExactNames = React.useMemo(() => [
+    'School Hall', 'Concourse', 'Stage (Auditorium)', 'Electron', 'Event Horizon',
+    'Amphitheatre', 'Student Lounge', 'Photon', 'Design and Engineering Lab',
+    'School Field', 'Canteen', 'Canteen Vendor', 'Heritage Gallery (DNA@NUSHigh)',
+    'College Couselling', 'Staff Room', 'General Office'
+  ], []);
+  const importantSubstrings = React.useMemo(() => ['toilet', 'lift'], []); // lowercase for case-insensitive search
+
+  const importantNameColorMap = React.useMemo(() => {
+    const colors = [
+      '#FF6347', // Tomato
+      '#4682B4', // SteelBlue
+      '#32CD32', // LimeGreen
+      '#FFD700', // Gold
+      '#BA55D3', // MediumOrchid
+      '#00FA9A', // MediumSpringGreen
+      '#FF4500', // OrangeRed
+      '#40E0D0', // Turquoise
+      '#DA70D6', // Orchid
+      '#87CEEB', // SkyBlue
+      '#ADFF2F', // GreenYellow
+      '#FFA07A', // LightSalmon
+      '#20B2AA', // LightSeaGreen
+      '#DB7093', // PaleVioletRed
+      '#F0E68C'  // Khaki
+    ];
+    const mapping: { [key: string]: string } = {};
+    importantExactNames.forEach((name, index) => {
+      mapping[name] = colors[index % colors.length]; // Cycle through colors if more names than colors
+    });
+    return mapping;
+  }, [importantExactNames]);
+
+  // Ensure these are declared here:
+  const [activeToast, setActiveToast] = useState<ToastMessage | null>(null);
+  const toastTimerRef = React.useRef<NodeJS.Timeout | null>(null);
+
+  // Interface for toilet marker data
+  interface ToiletMarkerData {
+    id: string;
+    longitude: number;
+    latitude: number;
+    levelStr: string; 
+    name?: string;
+  }
+  const [currentFloorToiletMarkersData, setCurrentFloorToiletMarkersData] = useState<ToiletMarkerData[]>([]);
+
+  // Helper to calculate centroid of a polygon ring
+  const getCentroid = (ring: Array<[number, number]>): [number, number] | null => {
+    if (!ring || ring.length === 0) return null;
+    let sumX = 0;
+    let sumY = 0;
+    for (const point of ring) {
+      if (Array.isArray(point) && point.length >= 2) {
+        sumX += point[0];
+        sumY += point[1];
+      }
+    }
+    return ring.length > 0 ? [sumX / ring.length, sumY / ring.length] : null;
+  };
+
+  // Helper function to get a representative point from a feature for a marker
+  const getFeaturePoint = (feature: FloorFeature): [number, number] | null => {
+    if (!feature || !feature.geometry) return null;
+    const { geometry } = feature;
+    if (geometry.type === 'Point') {
+      return geometry.coordinates as [number, number];
+    } else if (geometry.type === 'Polygon') {
+      if (geometry.coordinates && geometry.coordinates[0]) {
+        return getCentroid(geometry.coordinates[0] as Array<[number, number]>);
+      }
+    } else if (geometry.type === 'MultiPolygon') {
+      // For a multipolygon, use the centroid of the first polygon's outer ring
+      if (geometry.coordinates && geometry.coordinates[0] && geometry.coordinates[0][0]) {
+        return getCentroid(geometry.coordinates[0][0] as Array<[number, number]>);
+      }
+    }
+    return null;
+  };
+
+  // Effect to populate toilet marker data for the current floor
+  useEffect(() => {
+    if (!data) {
+      setCurrentFloorToiletMarkersData([]);
+      return;
+    }
+
+    const toiletsData: ToiletMarkerData[] = [];
+    data.features.forEach((feature, index) => {
+      const level = feature.properties?.level;
+      const amenity = feature.properties?.amenity;
+      const name = feature.properties?.name as string | undefined; // Keep as string | undefined
+
+      let isOnCurrentFloor = false;
+      if (typeof level === 'string') {
+        if (level.includes('-')) {
+          const parts = level.split('-');
+          if (parts.length === 2) {
+            const startLevel = parseInt(parts[0], 10);
+            const endLevel = parseInt(parts[1], 10);
+            if (!isNaN(startLevel) && !isNaN(endLevel) && startLevel <= currentFloor && endLevel >= currentFloor) {
+              isOnCurrentFloor = true;
+            }
+          }
+        } else {
+          if (parseInt(level, 10) === currentFloor) {
+            isOnCurrentFloor = true;
+          }
+        }
+      } else if (typeof level === 'number' && level === currentFloor) {
+        isOnCurrentFloor = true;
+      }
+
+      if ((amenity === 'toilets' || (name && name.toLowerCase().includes('toilet'))) && isOnCurrentFloor) {
+        const point = getFeaturePoint(feature);
+        if (point) {
+          toiletsData.push({
+            id: `toilet-marker-${feature.id || index}-${String(level ?? 'unknown')}`,
+            longitude: point[0],
+            latitude: point[1],
+            levelStr: typeof level === 'string' || typeof level === 'number' ? String(level) : 'N/A',
+            name: name || (typeof amenity === 'string' ? amenity : undefined)
+          });
+        }
+      }
+    });
+    setCurrentFloorToiletMarkersData(toiletsData);
+  }, [data, currentFloor]);
 
   // When visualSettings.defaultVisibility changes, update filterOptions
   useEffect(() => {
@@ -126,262 +285,611 @@ export default function Home() {
       });
   }, []);
 
-  // Calculate amenities available on the currently selected floor
-  const amenitiesOnCurrentLevel = React.useMemo(() => {
-    if (!data) return [];
-    const amenities = data.features
-      .filter(f => f.properties?.level === currentFloor.toString() && typeof f.properties?.amenity === 'string')
-      .map(f => f.properties.amenity as string);
-    return [...new Set(amenities)].sort();
-  }, [data, currentFloor]);
+  // Calculate amenities available on the currently selected floor; commented out for eslint
+  // const usefulAmenities = ["canteen", "events_venue", "lab", "sports", "study_corner", "toilets", "concourse"] 
+  // const amenitiesOnCurrentLevel = React.useMemo(() => {
+  //   if (!data) return [];
+  //   console.log(data.features);
+  //   const amenities = data.features
+  //     .filter(f => f.properties?.level === currentFloor.toString() && typeof f.properties?.amenity === 'string')
+  //     .map(f => f.properties.amenity as string);
+  //   return [...new Set(amenities)].sort();
+  // }, [data, currentFloor]);
 
   // Effect to reset amenity filter when floor changes
   useEffect(() => {
     setFilterAmenity(null); // Reset to "Show All"
   }, [currentFloor]);
 
-  // --- Filter Handlers --- 
-  const handleAmenityFilterChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const { value } = event.target;
-    setFilterAmenity(value === "__ALL__" ? null : value);
-  };
+  // --- Filter Handlers --- commented out for eslint
+  // const handleAmenityFilterChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+  //   const { value } = event.target;
+  //   setFilterAmenity(value === "__ALL__" ? null : value);
+  // };
 
-  const handleOptionsChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, checked } = event.target;
-    // Handles showServicePaths, showUtilities
-    setFilterOptions(prev => ({ ...prev, [name]: checked }));
-  };
+  // const handleShowImportantAmenitiesChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+  //   setShowImportantAmenitiesOnly(event.target.checked);
+  //   if (event.target.checked) {
+  //     setFilterAmenity(null); // Reset specific amenity filter when this mode is on
+  //   }
+  // };
+
+  // const handleOptionsChange = (event: React.ChangeEvent<HTMLInputElement>) => { commented out for eslint
+  //   const { name, checked } = event.target;
+  //   // Handles showServicePaths, showUtilities
+  //   setFilterOptions(prev => ({ ...prev, [name]: checked }));
+  // };
 
   // --- Layer Filter Logic --- 
   // Base filter for user selections (amenity, options)
   const baseLayerFilter: FilterSpecification | null = React.useMemo(() => {
-    const filters: any[] = ["all"];
-    if (filterAmenity !== null) {
-      filters.push(['==', ['get', 'amenity'], filterAmenity]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const filters: any[] = ["all"]; 
+
+    if (showImportantAmenitiesOnly) {
+      const exactMatchFilter: FilterSpecification = [
+        'in',
+        ['coalesce', ['get', 'name'], ''] as any, 
+        ['literal', importantExactNames] as any
+      ];
+      const substringMatchFilters: FilterSpecification[] = importantSubstrings.map(sub =>
+        [
+          '!=',
+          ['index-of', sub, ['downcase', ['coalesce', ['get', 'name'], '']] as any],
+          -1
+        ] as FilterSpecification 
+      );
+      const allNameConditions: FilterSpecification = ['any', exactMatchFilter, ...substringMatchFilters] as any;
+      
+      const importantAmenityWithNameCondition: FilterSpecification = ['all', ['has', 'amenity'] as any, allNameConditions] as any;
+      const corridorCondition: FilterSpecification = ['==', ['get', 'indoor'], 'corridor'] as any;
+
+      filters.push(['any', importantAmenityWithNameCondition, corridorCondition]);
+
+    } else if (filterAmenity !== null) {
+      filters.push(['==', ['get', 'amenity'], filterAmenity] as any);
     }
+
     if (!filterOptions.showServicePaths) {
-      filters.push(['!=', ['get', 'highway'], 'service']);
+      filters.push(['!=', ['get', 'highway'], 'service'] as any);
     }
     if (!filterOptions.showUtilities) {
-      filters.push(['!', ['has', 'utility']]);
+      filters.push(['!', ['has', 'utility']] as any);
     }
     return filters.length > 1 ? filters as FilterSpecification : null;
-  }, [filterAmenity, filterOptions]);
+  }, [
+    filterAmenity, 
+    filterOptions.showServicePaths, 
+    filterOptions.showUtilities,
+    showImportantAmenitiesOnly, // Added dependency
+    importantExactNames,      // Added dependency
+    importantSubstrings       // Added dependency
+  ]);
 
   // Filter that handles single levels and "start-end" ranges
   const levelFilter: FilterSpecification = React.useMemo(() => {
     const currentLevelStr = currentFloor.toString();
-    const currentLevelNum = currentFloor; // Already a number
-
-    // Define a default value for failed parsing, unlikely to be a real level
+    const currentLevelNum = currentFloor;
     const PARSE_ERROR_DEFAULT = -9999;
+    // For the 'typeof' issue, a direct cast to FilterSpecification might be too broad.
+    // It's an expression, let's assume maplibre handles it.
+    const typeOfLevelIsString: FilterSpecification = ['==', ['typeof', ['get', 'level']] as any, 'string'];
 
-    const filterExpression: any = [
+    const filterExpression = [
       'case',
-      // Case 1: Direct string match (e.g., level: "1", currentFloor: 1)
       ['==', ['get', 'level'], currentLevelStr],
       true,
-
-      // Case 2: Check range "x-y"
       [
         'all',
-        // Must be a string
-        ['==', ['typeof', ['get', 'level']], 'string'],
-        // Must contain a hyphen
-        ['let', 'hyphenIndex', ['index-of', '-', ['get', 'level']],
-          ['!=', ['var', 'hyphenIndex'], -1]
-        ],
-        // Check Start Level <= currentFloor
-        ['>=',
-          currentLevelNum,
-          ['to-number',
-            ['slice', ['get', 'level'], 0, ['index-of', '-', ['get', 'level']]],
-            PARSE_ERROR_DEFAULT
-          ]
-        ],
-        // Check currentFloor <= End Level
-        ['<=',
-          currentLevelNum,
-          ['to-number',
-            ['slice', ['get', 'level'], ['+', ['index-of', '-', ['get', 'level']], 1]],
-            PARSE_ERROR_DEFAULT
-          ]
-        ],
-        // Ensure parsing didn't fail for start level
-        ['!=',
-          ['to-number',
-            ['slice', ['get', 'level'], 0, ['index-of', '-', ['get', 'level']]],
-            PARSE_ERROR_DEFAULT
-          ],
-          PARSE_ERROR_DEFAULT
-        ],
-        // Ensure parsing didn't fail for end level
-        ['!=',
-          ['to-number',
-            ['slice', ['get', 'level'], ['+', ['index-of', '-', ['get', 'level']], 1]],
-            PARSE_ERROR_DEFAULT
-          ],
-          PARSE_ERROR_DEFAULT
-        ]
+        typeOfLevelIsString, // Use the casted expression
+        ['let', 'hyphenIndex', ['index-of', '-', ['get', 'level']], ['!=', ['var', 'hyphenIndex'], -1]],
+        ['>=', currentLevelNum, ['to-number', ['slice', ['get', 'level'], 0, ['index-of', '-', ['get', 'level']]], PARSE_ERROR_DEFAULT]],
+        ['<=', currentLevelNum, ['to-number', ['slice', ['get', 'level'], ['+', ['index-of', '-', ['get', 'level']], 1]], PARSE_ERROR_DEFAULT]],
+        ['!=', ['to-number', ['slice', ['get', 'level'], 0, ['index-of', '-', ['get', 'level']]], PARSE_ERROR_DEFAULT], PARSE_ERROR_DEFAULT],
+        ['!=', ['to-number', ['slice', ['get', 'level'], ['+', ['index-of', '-', ['get', 'level']], 1]], PARSE_ERROR_DEFAULT], PARSE_ERROR_DEFAULT]
       ],
-      true, // Show if range check passes and parsing succeeded
-
-      // Default: Do not show
+      true,
       false
-    ];
-    // Assign to the correctly typed const after defining with type any
-    return filterExpression as FilterSpecification;
+    ] as FilterSpecification;
+    return filterExpression;
   }, [currentFloor]);
 
   // Combine filters for the Fill layer (exclude service highways, but always show stairs/elevators)
   const fillLayerFilter: FilterSpecification = React.useMemo(() => {
-    const baseConditions = [];
+    const baseConditions: FilterSpecification[] = [];
     if (baseLayerFilter && Array.isArray(baseLayerFilter) && baseLayerFilter[0] === 'all') {
-      // Extract individual conditions from baseLayerFilter (e.g., amenity, utility checks)
-      baseConditions.push(...baseLayerFilter.slice(1));
+      const conditionsToPush = baseLayerFilter.slice(1) as FilterSpecification[];
+      baseConditions.push(...conditionsToPush);
     }
-
-    // Condition 1: Feature is stairs or elevator
     const isStairsOrElevator: FilterSpecification = ['in', ['get', 'highway'], ['literal', ['steps', 'elevator']]];
-
-    // Condition 2: Feature is NOT service highway AND passes base filters
-    // Explicitly type as any[] initially to help with push spread later if needed, 
-    // but build the core filter logic correctly.
-    const isNormalFilteredFeatureConditions: any[] = [ ['!=', ['get', 'highway'], 'service'] ];
+    const isNormalFilteredFeatureConditionsItems: FilterSpecification[] = [ ['!=', ['get', 'highway'], 'service'] as FilterSpecification ];
     if (baseConditions.length > 0) {
-        isNormalFilteredFeatureConditions.push(...baseConditions);
+      isNormalFilteredFeatureConditionsItems.push(...baseConditions);
     }
-    // Create the final 'all' filter for normal features
-    const isNormalFilteredFeature: FilterSpecification = ['all', ...isNormalFilteredFeatureConditions];
+    const normalFeatureClause = ['all', ...isNormalFilteredFeatureConditionsItems] as FilterSpecification;
+    const combinedFilter = ['all', levelFilter, ['any', isStairsOrElevator, normalFeatureClause]] as FilterSpecification;
+    return combinedFilter;
+  }, [baseLayerFilter, levelFilter]);
 
-    // Final filter: Must be on the current level AND (is stairs/elevator OR is a normal filtered feature)
-    return ['all', levelFilter, ['any', isStairsOrElevator, isNormalFilteredFeature]] as FilterSpecification;
-  }, [levelFilter, baseLayerFilter]);
-
-  // Combine filters for the Line layer (only service highways)
+  // Filter for the Line layer (only service highways, respecting base filters and level)
   const lineLayerFilter: FilterSpecification = React.useMemo(() => {
-    const conditions: any[] = [levelFilter, ['==', ['get', 'highway'], 'service']];
+    const conditionsItems: FilterSpecification[] = [levelFilter, ['==', ['get', 'highway'], 'service'] as FilterSpecification];
     if (baseLayerFilter && Array.isArray(baseLayerFilter) && baseLayerFilter[0] === 'all') {
-      conditions.push(...baseLayerFilter.slice(1));
+      const baseFilterConditions = baseLayerFilter.slice(1) as FilterSpecification[];
+      baseFilterConditions.forEach(cond => {
+        // A more robust check for utility filter might be needed
+        if (JSON.stringify(cond).includes("utility")) { 
+            if (filterOptions.showUtilities) conditionsItems.push(cond);
+        } else {
+            conditionsItems.push(cond);
+        }
+      });
     }
-    return ['all', ...conditions] as FilterSpecification;
-  }, [levelFilter, baseLayerFilter]);
+    return ['all', ...conditionsItems] as FilterSpecification;
+  }, [levelFilter, baseLayerFilter, filterOptions.showUtilities]);
+
+  const sourceLayerFilter: FilterSpecification = React.useMemo(() => {
+    return fillLayerFilter;
+  }, [fillLayerFilter]);
 
   // --- Paint Style Calculation ---
-  // Set a default floor height since it was removed from visualization settings
-  const floorHeight = 5; // Default value
-
   const fillPaint = React.useMemo(() => {
-    const baseElevation = currentFloor * floorHeight;
-    
-    // Define relative height expression with explicit 'any' cast
-    const featureRelativeHeightExpression: any = [
-      'case',
-      ['in', ['get', 'highway'], ['literal', ['steps', 'elevator']]], 0,
-      ['has', 'landuse'], 0,
-      ['==', ['get', 'indoor'], 'corridor'], 0,
-      ['has', 'door'], 0,
-      ['==', ['get', 'amenity'], 'bench'], 0.5,
-      3
-    ];
+    const matchExpression: any[] = ['match', ['coalesce', ['get', 'name'], '']];
+    importantExactNames.forEach(name => {
+      matchExpression.push(name, importantNameColorMap[name]);
+    });
 
-    // Define color expression with explicit 'any' cast
-    const featureColorExpression: any = [
+    // Fallback colors for other categories
+    const defaultColorLogic = [
       'case',
       ['has', 'utility'], visualSettings.colors.utilities,
       ['has', 'landuse'], visualSettings.colors.landuse,
       ['==', ['get', 'indoor'], 'corridor'], visualSettings.colors.corridor,
       ['==', ['get', 'highway'], 'steps'], visualSettings.colors.stairs,
       ['==', ['get', 'highway'], 'elevator'], visualSettings.colors.elevator,
-      visualSettings.colors.default
+      visualSettings.colors.default // Default color if no other condition matches
     ];
 
+    // The match expression for important names takes precedence.
+    // If a name doesn't match any in importantExactNames, the defaultColorLogic is used.
+    matchExpression.push(defaultColorLogic); 
+
     return {
-      'fill-extrusion-color': featureColorExpression,
-      'fill-extrusion-opacity': 0.7,
-      'fill-extrusion-base': baseElevation,
-      // Construct height expression using the calculated base and the relative height expression
-      'fill-extrusion-height': ['+', baseElevation, featureRelativeHeightExpression] as any // Cast final height expression too if needed
-    }; // Remove the explicit cast to FillExtrusionPaint here
-  }, [currentFloor, floorHeight, visualSettings.colors]); // Recalculate paint when floor changes or colors change
+      'fill-color': matchExpression as any, 
+      'fill-opacity': 0.75, // Slightly increased opacity for better color visibility
+    };
+  }, [visualSettings.colors, importantExactNames, importantNameColorMap]);
 
   // --- Map Event Handlers --- 
-  const onHover = React.useCallback((event: MapLayerMouseEvent) => {
-    const feature = event.features && event.features[0];
-    if (feature && feature.properties?.name) {
-      setHoverInfo({
-        longitude: event.lngLat.lng,
-        latitude: event.lngLat.lat,
-        featureName: feature.properties.name,
-      });
+  const handleMapHover = (e: MapLayerMouseEvent) => {
+    if (e.features && e.features.length > 0) {
+      const feature = e.features[0] as Feature<Geometry, FloorFeature['properties']>; 
+
+      // Prevent hover popup for corridor polygons
+      if (
+        feature.geometry?.type === 'Polygon' &&
+        feature.properties?.indoor === 'corridor'
+      ) {
+        setHoverInfo(null);
+        return; // Exit early, no popup for this feature
+      }
+
+      if (feature.properties) {
+        const featureName = typeof feature.properties.name === 'string' ? feature.properties.name : 'Unnamed Feature';
+        const level = feature.properties.level;
+        setHoverInfo({
+          longitude: e.lngLat.lng,
+          latitude: e.lngLat.lat,
+          featureName: featureName,
+          level: level ? String(level) : undefined
+        });
+      } else {
+        // If feature has no properties, ensure no popup is shown
+        setHoverInfo(null);
+      }
     } else {
       setHoverInfo(null);
     }
-  }, []);
+  };
 
-  const onMouseLeave = React.useCallback(() => {
-    setHoverInfo(null);
-  }, []);
+  // const handleMapClick = (e: MapLayerMouseEvent) => {
+  //   if (e.features && e.features.length > 0) {
+  //     const targetFeature = e.features[0] as Feature<Geometry, FloorFeature['properties']>; // Type cast here
+  //     if (targetFeature && targetFeature.properties) {
+  //       const amenity = targetFeature.properties.amenity;
+  //       if (typeof amenity === 'string') {
+  //         // ... existing code ...
+  //       }
+  //     }
+  //   }
+  // };
 
   // Handle the location detected from the QR scanner
   const handleLocationDetected = (location: UserLocation) => {
     console.log("Location detected:", location);
     
+    // Clear any existing toast timer
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
+
     // Update user location state
     setUserLocation({
       latitude: location.latitude,
       longitude: location.longitude,
       level: location.level || currentFloor
     });
+
+    // Update URL with location parameters but don't navigate (no page refresh)
+    const currentPathname = window.location.pathname;
+    const newSearchParams = new URLSearchParams(searchParams.toString());
+    newSearchParams.set('x', location.longitude.toString());
+    newSearchParams.set('y', location.latitude.toString());
+    newSearchParams.set('l', (location.level || currentFloor).toString());
+    
+    // Remove eventId and floor if they exist, as they're superseded by x,y,l
+    newSearchParams.delete('eventId');
+    newSearchParams.delete('floor');
+    
+    // Update URL without page refresh
+    router.replace(`${currentPathname}?${newSearchParams.toString()}`, { scroll: false });
+
+    const toastId = Date.now().toString();
+    setActiveToast({
+      id: toastId,
+      message: `Your current position is displayed on Level ${location.level || currentFloor}`,
+      type: 'info'
+    });
+
+    toastTimerRef.current = setTimeout(() => {
+      console.log('[Toast Timer DEBUG] Timer fired.');
+      setActiveToast(currentToast => {
+        console.log('[Toast Timer DEBUG] Inside setActiveToast callback.');
+        console.log('[Toast Timer DEBUG] currentToast object:', currentToast);
+        console.log('[Toast Timer DEBUG] currentToast?.id:', currentToast?.id, ', Expected toastId to clear:', toastId);
+        if (currentToast && currentToast.id === toastId) {
+          console.log('[Toast Timer DEBUG] IDs match. Clearing toast (returning null).');
+          return null;
+        } else {
+          console.log('[Toast Timer DEBUG] IDs do NOT match or no currentToast. Not clearing toast (returning currentToast).');
+          return currentToast;
+        }
+      });
+      toastTimerRef.current = null; // Clear the ref after timeout executes
+    }, 5000); // Auto-dismiss after 5 seconds
     
     // If QR code includes a floor level, switch to that floor
     if (location.level && floors.includes(location.level)) {
       setCurrentFloor(location.level);
     }
-    
+
+    // Fly to the detected location on the map
+    mapRef.current?.flyTo({
+      center: [location.longitude, location.latitude],
+      zoom: 20, // Zoom in close to the location
+      pitch: 45, // Maintain current pitch or set a preferred one
+      bearing: 0, // Optional: reset bearing or maintain
+      essential: true // This animation is considered essential
+    });
+
     // Close the scanner
     setIsScanning(false);
   };
 
+  // Effect for search functionality
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      return;
+    }
+
+    const combinedResults: SearchResultItem[] = [];
+    const lowerSearchQuery = searchQuery.toLowerCase();
+
+    // Search events (events are always searchable)
+    events.forEach(event => {
+      if (event.title.toLowerCase().includes(lowerSearchQuery)) {
+        combinedResults.push({
+          id: `event-${event.id}`,
+          type: 'event',
+          name: event.title,
+          level: event.location.level,
+          coordinates: { latitude: event.location.latitude, longitude: event.location.longitude },
+          original: event as AppEvent 
+        });
+      }
+    });
+
+    // Search GeoJSON features (locations)
+    if (data?.features) {
+      data.features.forEach((feature, index) => {
+        const featureName = feature.properties?.name as string | undefined;
+        if (featureName && featureName.toLowerCase().includes(lowerSearchQuery)) {
+          // If showImportantAmenitiesOnly is true, apply additional filtering
+          if (showImportantAmenitiesOnly) {
+            const isImportantAmenity = feature.properties?.amenity && 
+              (importantExactNames.includes(featureName) || 
+               importantSubstrings.some(sub => featureName.toLowerCase().includes(sub)));
+            const isCorridor = feature.properties?.indoor === 'corridor';
+            
+            if (!isImportantAmenity && !isCorridor) {
+              return; // Skip if not an important location when filter is active
+            }
+          }
+
+          let coords: { latitude: number; longitude: number } | null = null;
+          let featureLevel = 1; 
+          const levelStr = feature.properties?.level as string | undefined;
+
+          if (levelStr) {
+            if (levelStr.includes('-')) {
+              const parts = levelStr.split('-');
+              featureLevel = parseInt(parts[0], 10) || 1;
+            } else {
+              featureLevel = parseInt(levelStr, 10) || 1;
+            }
+          }
+
+          if (feature.geometry.type === 'Point') {
+            const [lng, lat] = feature.geometry.coordinates as [number, number];
+            coords = { latitude: lat, longitude: lng };
+          } else if (feature.geometry.type === 'Polygon') {
+            const polygonCoords = feature.geometry.coordinates as Array<Array<[number, number]>>;
+            const firstRing = polygonCoords[0];
+            if (firstRing && firstRing.length > 0) {
+              const sum = firstRing.reduce((acc, c) => [acc[0] + c[0], acc[1] + c[1]], [0, 0]);
+              coords = { longitude: sum[0] / firstRing.length, latitude: sum[1] / firstRing.length };
+            }
+          }
+
+          if (coords) {
+            combinedResults.push({
+              id: `location-${feature.id || index}`,
+              type: 'location',
+              name: featureName,
+              level: featureLevel,
+              coordinates: coords,
+              original: feature as FloorFeature // Cast to ensure type conformity
+            });
+          }
+        }
+      });
+    }
+    setSearchResults(combinedResults.slice(0, 10)); // Limit results for UI
+  }, [searchQuery, events, data, showImportantAmenitiesOnly, importantExactNames, importantSubstrings]); // Added dependencies
+
+  const handleSearchResultClick = (item: SearchResultItem) => {
+    setCurrentFloor(item.level);
+    
+    // Fly to the coordinates
+    mapRef.current?.flyTo({
+      center: [item.coordinates.longitude, item.coordinates.latitude],
+      zoom: 20, // Zoom in closer on selection
+      pitch: 45,
+      bearing: 0,
+      essential: true // This animation is considered essential with respect to prefers-reduced-motion
+    });
+
+    if (item.type === 'event') {
+      setSelectedEvent(item.original as AppEvent);
+    }
+    // For locations, map pans/zooms. Hover will show name via existing mechanism.
+    // No separate popup for selected location for simplicity for now.
+
+    setSearchQuery('');
+    setSearchResults([]);
+  };
+
+  // JSX for Filters - to be placed above the map
+  const filtersUI = (
+    <div className="absolute top-2 left-2 z-20 p-2 rounded-lg shadow-xl backdrop-blur-sm collapse w-fit sm:top-4 sm:left-4 sm:p-3 bg-base-100/90 map-filter-overlay">
+      <input type="checkbox" />
+      <h3 className="py-1 font-semibold text-center collapse-title">Map Filters/Search</h3>
+      <div className="grid grid-cols-1 gap-1 collapse-content">
+        {/* Floor Level Controls */}
+        <div className="rounded-md border collapse border-base-300 bg-base-200">
+          <input type="checkbox" className="peer" /> 
+          <div className="flex justify-center mt-2 text-sm font-semibold collapse-title text-base-content align-center peer-checked:mt-0 peer-checked:bg-base-300">
+            Floor Level
+          </div>
+          <div className="collapse-content peer-checked:bg-base-100">
+            <div className="filter-section-content">
+              {floors.length > 0 ? floors.filter((floor) => floor <= 6).map((floor) => (
+                <button
+                  key={floor}
+                  onClick={() => setCurrentFloor(floor)}
+                  className={`btn btn-xs sm:btn-sm ${ 
+                    currentFloor === floor ? 'btn-primary' : 'btn-ghost'
+                  }`}
+                >
+                  {`Level ${floor}`}
+                </button>
+              )) : <span className="text-xs text-base-content/60">No levels found</span>}
+            </div>
+          </div>
+        </div>
+
+        {/* Search Bar and Results */}
+        <div className="p-2 mt-2 rounded-md border border-base-300 bg-base-200">
+          <input 
+            type="text"
+            placeholder="Search events & locations..."
+            className="w-full input input-sm input-bordered"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+          {searchResults.length > 0 && (
+            <div className="overflow-y-auto mt-2 max-h-48 rounded-md shadow bg-base-100">
+              <ul className="p-1 menu menu-xs">
+                {searchResults.map(item => (
+                  <li key={item.id} onClick={() => handleSearchResultClick(item)}>
+                    <a className="text-xs">
+                      <span className={`badge badge-xs ${item.type === 'event' ? 'badge-secondary' : 'badge-info'} mr-1`}>
+                        {item.type === 'event' ? 'E' : 'L'}
+                      </span>
+                      {item.name} (L{item.level})
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+
+      </div>
+    </div>
+  );
+
+  // Effect to handle eventId and floor from URL query parameters
+  useEffect(() => {
+    // Add debug logging
+    console.log("URL parameters effect running", { 
+      xParam: searchParams.get('x'),
+      yParam: searchParams.get('y'),
+      lParam: searchParams.get('l'),
+      mapLoaded
+    });
+
+    // Bail early if map isn't loaded yet
+    if (!mapLoaded) {
+      console.log("Map not yet loaded, deferring parameter processing");
+      return;
+    }
+
+    const eventIdFromQuery = searchParams.get('eventId');
+    const floorFromQuery = searchParams.get('floor');
+    const xFromQuery = searchParams.get('x');
+    const yFromQuery = searchParams.get('y');
+    const lFromQuery = searchParams.get('l');
+
+    const clearedParams = false;
+
+    // Priority 1: Handle x, y, l parameters for direct location linking
+    if (xFromQuery && yFromQuery && lFromQuery) {
+      const longitude = parseFloat(xFromQuery);
+      const latitude = parseFloat(yFromQuery);
+      const level = parseInt(lFromQuery, 10);
+
+      if (!isNaN(longitude) && !isNaN(latitude) && !isNaN(level) && floors.includes(level)) {
+        console.log("Processing location from URL", { longitude, latitude, level });
+        if (userLocation?.latitude !== latitude || userLocation?.longitude !== longitude || currentFloor !== level) {
+          setUserLocation({ latitude, longitude, level });
+          setCurrentFloor(level);
+          const toastId = Date.now().toString();
+          setActiveToast({
+            id: toastId,
+            message: `Displaying location from URL on Level ${level}`,
+            type: 'info'
+          });
+          if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+          toastTimerRef.current = setTimeout(() => {
+            setActiveToast(current => current && current.id === toastId ? null : current);
+            toastTimerRef.current = null;
+          }, 5000);
+        }
+        // Don't clear these params - keep them in URL for sharing/bookmarking
+      } else {
+        // Don't clear parameters even if invalid - let them stay in the URL
+        // No router.replace() call here
+      }
+    }
+
+    // Priority 2: Handle eventId and floor parameters (only if x,y,l weren't primary)
+    if (!clearedParams && eventIdFromQuery && events.length > 0) {
+      const targetEvent = events.find(event => event.id === eventIdFromQuery);
+      if (targetEvent) {
+        const targetFloor = parseInt(floorFromQuery || targetEvent.location.level.toString(), 10);
+        if (!isNaN(targetFloor) && floors.includes(targetFloor)) {
+          setCurrentFloor(targetFloor);
+        } else if (floors.includes(targetEvent.location.level)){
+          setCurrentFloor(targetEvent.location.level); 
+        }
+        setSelectedEvent(targetEvent);
+        mapRef.current?.flyTo({
+          center: [targetEvent.location.longitude, targetEvent.location.latitude],
+          zoom: 20,
+          pitch: 45,
+          essential: true,
+        });
+        // We'll still clear eventId/floor params since those are not meant for sharing
+        const currentPathname = window.location.pathname;
+        const newSearchParams = new URLSearchParams(searchParams.toString());
+        newSearchParams.delete('eventId');
+        newSearchParams.delete('floor');
+        router.replace(`${currentPathname}?${newSearchParams.toString()}`, { scroll: false });
+      }
+    }
+  }, [searchParams, events, floors, router, userLocation, mapLoaded]); // Added mapLoaded dependency
+
+  // Fly to userLocation once map is loaded
+  useEffect(() => {
+    // Add debug logging
+    console.log("userLocation effect running", { userLocation, mapLoaded });
+
+    if (mapLoaded && userLocation) {
+      console.log("Map loaded and userLocation available - flying to location", userLocation);
+      mapRef.current?.flyTo({
+        center: [userLocation.longitude, userLocation.latitude],
+        zoom: 20,
+        pitch: 45,
+        essential: true,
+      });
+    }
+  }, [mapLoaded, userLocation]);
+
+  // Calculate offsets for events with the same coordinates
+  const eventsWithOffsets = React.useMemo(() => {
+    // Get events for the current floor
+    const floorEvents = events.filter(event => event.location.level === currentFloor);
+    
+    // Group events by their coordinates
+    const locationGroups = floorEvents.reduce((groups, event) => {
+      // Create a key from latitude and longitude with limited precision
+      const key = `${event.location.latitude.toFixed(6)},${event.location.longitude.toFixed(6)}`;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(event);
+      return groups;
+    }, {} as Record<string, AppEvent[]>);
+    
+    // Calculate offsets for each group that has more than one event
+    const result: { event: AppEvent; longitude: number; latitude: number }[] = [];
+    
+    Object.values(locationGroups).forEach(eventGroup => {
+      if (eventGroup.length === 1) {
+        // No offset needed for single events
+        result.push({
+          event: eventGroup[0],
+          longitude: eventGroup[0].location.longitude,
+          latitude: eventGroup[0].location.latitude
+        });
+      } else {
+        // Calculate offsets in a spiral pattern for multiple events
+        const baseMultiplier = 0.00004; // Base offset distance (approx 4 meters)
+        eventGroup.forEach((event, index) => {
+          // Fibonacci spiral offset calculation 
+          // Each subsequent point is placed further out in the spiral
+          const angle = index * (Math.PI / 4); // 45 degrees between points
+          const multiplier = Math.ceil(index / 8) * baseMultiplier; // Increase distance every 8 points
+          
+          const offsetX = Math.cos(angle) * multiplier;
+          const offsetY = Math.sin(angle) * multiplier;
+          
+          result.push({
+            event: event,
+            longitude: event.location.longitude + offsetX,
+            latitude: event.location.latitude + offsetY
+          });
+        });
+      }
+    });
+    
+    return result;
+  }, [events, currentFloor]);
+
   return (
-    <div className="drawer lg:drawer-open"> {/* Drawer container */} 
-      <input id="sidebar-drawer" type="checkbox" className="drawer-toggle" /> 
-      
-      {/* Page Content */} 
-      <div className="drawer-content flex flex-col min-h-screen bg-base-200">
-        {/* Navbar */} 
+    <div className="flex flex-col h-full">
+      <main className="flex flex-col flex-grow w-full max-w-none">
 
-
-        {/* Main Content Area (Map, Cards, etc.) */} 
-        <main className="flex-grow max-w-none mx-auto px-4 py-8 sm:px-6 lg:px-8 w-full">
-        <div className="text-center mb-10">
-            <h2 className="text-3xl font-bold text-base-content mb-4">Interactive Pathfinding Visualization</h2>
-            <p className="text-base-content/80 max-w-2xl mx-auto">
-            Explore various pathfinding algorithms through interactive visualization on real-world maps.
-          </p>
-        </div>
-        
-        {/* QR Scanner Button */}
-        <div className="flex justify-center mb-4 gap-2">
-          <button 
-            onClick={() => setIsScanning(true)} 
-            className="btn btn-primary gap-2"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            Scan QR Location
-          </button>
-          <Link href="/qr-generator" className="btn btn-outline gap-2">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
-            </svg>
-            Generate Test QR
-          </Link>
-        </div>
-
-        {/* QR Scanner Modal */}
         <QRScannerModal 
           isOpen={isScanning}
           onClose={() => setIsScanning(false)}
@@ -390,77 +898,94 @@ export default function Home() {
           availableFloors={floors}
         />
 
-          {/* Map container */} 
-          <div className="card bg-base-100 shadow-xl overflow-hidden">
+          <div className="flex overflow-hidden flex-col flex-grow shadow-xl card bg-base-100">
           {isLoading ? (
-              <div className="flex items-center justify-center h-[500px] lg:h-[600px]">
+              <div className="flex flex-grow justify-center items-center">
                 <span className="loading loading-spinner loading-lg text-primary"></span>
             </div>
           ) : !data ? (
-              <div className="flex items-center justify-center h-[500px] lg:h-[600px] text-error font-semibold">
+              <div className="flex flex-grow justify-center items-center font-semibold text-error">
               No data found. Please check your connection and try again.
             </div>
           ) : (
-              // REMOVED relative positioning here, map takes full card space 
-              <div className="h-[500px] lg:h-[600px] w-full">
+            <div className="relative flex-grow w-full">
+              {filtersUI}
               <Map
+                ref={mapRef}
+                onLoad={() => setMapLoaded(true)}
                 initialViewState={{
                   latitude: 1.3067,
                   longitude: 103.7695,
-                    zoom: 18,
-                    pitch: 45 // Add pitch for 3D view
+                  zoom: 18,
+                  pitch: 45,
                 }}
-                style={{width: '100%', height: '100%'}}
+                style={{ width: '100%', height: '100%' }}
                 mapStyle="https://demotiles.maplibre.org/style.json"
-                  onMouseMove={onHover}
-                  onMouseLeave={onMouseLeave} 
-                  interactiveLayerIds={['geojson-fill-layer', 'geojson-highway-line-layer']}
-                  cursor={hoverInfo || selectedEvent ? 'pointer' : 'grab'} // Change cursor on hover or when an event is selected
+                maxBounds={[103.767, 1.305, 103.771, 1.309]}
+                onMouseMove={handleMapHover}
+                onMouseLeave={() => setHoverInfo(null)}
+                interactiveLayerIds={['geojson-fill-layer', 'geojson-highway-line-layer']}
+                cursor={hoverInfo || selectedEvent ? 'pointer' : 'grab'}
               >
                 <NavigationControl position="top-right" />
-                  {data && (
-                    <Source id="geojson-data" type="geojson" data={data}> 
-                      {/* Layer 1: Fill Extrusion Layer */}
-                      <Layer 
-                        id="geojson-fill-layer" 
-                        type="fill-extrusion" 
-                        filter={fillLayerFilter} 
-                        paint={fillPaint} // Use the memoized paint object
-                      />
-                       {/* Layer 2: Line Layer (Only service highways) */}
+                {data && (
+                  <Source key={`source-${currentFloor}`} id="geojson-data" type="geojson" data={data} filter={sourceLayerFilter}> 
+                    <Layer 
+                      id="geojson-fill-layer" 
+                      type="fill"
+                      filter={fillLayerFilter} 
+                      paint={fillPaint} 
+                    />
                   <Layer 
-                         id="geojson-highway-line-layer" // Line layer ID
+                      id="geojson-highway-line-layer" 
                          type="line" 
-                         filter={lineLayerFilter} // Use specific line filter
+                       filter={lineLayerFilter} 
                     paint={{
-                           'line-color': visualSettings.colors.servicePaths, // Use service paths color from settings
-                           'line-width': 8         // Increased line width
+                        'line-color': visualSettings.colors.servicePaths, 
+                        'line-width': 8         
                     }} 
                   />
                 </Source>
-                  )}
+                )}
+
+                  {eventsWithOffsets.map(({ event, longitude, latitude }) => (
+                    <Marker
+                      key={event.id}
+                      longitude={longitude}
+                      latitude={latitude}
+                      anchor="bottom"
+                      onClick={() => setSelectedEvent(event)}
+                    >
+                      <div className="flex justify-center items-center w-8 h-8 text-white rounded-full cursor-pointer bg-error">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                      </div>
+                    </Marker>
+                  ))}
                   
-                  {/* Event Markers for the current floor */}
-                  {events
-                    .filter(event => event.location.level === currentFloor)
-                    .map(event => (
-                      <Marker
-                        key={event.id}
-                        longitude={event.location.longitude}
-                        latitude={event.location.latitude}
-                        anchor="bottom"
-                        onClick={() => setSelectedEvent(event)}
+                  {/* Toilet Icon Markers using HTML Marker */}
+                  {currentFloorToiletMarkersData.map(toilet => (
+                    <Marker
+                      key={toilet.id}
+                      longitude={toilet.longitude}
+                      latitude={toilet.latitude}
+                      anchor="center" 
+                      // onClick={() => console.log('Toilet clicked:', toilet)} // Optional for future interaction
+                    >
+                      <div 
+                        className="w-5 h-5 p-0.5 bg-blue-600 rounded-full shadow-md flex items-center justify-center cursor-pointer hover:bg-blue-800" 
+                        title={`Toilet: ${toilet.name || 'Restroom'} (Level ${toilet.levelStr})`}
                       >
-                        <div className="w-8 h-8 bg-error text-white rounded-full flex items-center justify-center cursor-pointer">
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                          </svg>
-                        </div>
-                      </Marker>
-                    ))
-                  }
+                        {/* Simple SVG for toilet icon - you can replace with a more detailed one */}
+                        <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5.5 22v-7.5H4V9c0-1.1.9-2 2-2h3c1.1 0 2 .9 2 2v5.5H9.5V22h-4zM18 22v-6h3l-2.54-7.63C18.18 7.55 17.42 7 16.56 7h-.12c-.86 0-1.63.55-1.9 1.37L12 16h3v6h3zM7.5 6c1.11 0 2-.89 2-2s-.89-2-2-2-2 .89-2 2 .89 2 2 2zm9 0c1.11 0 2-.89 2-2s-.89-2-2-2-2 .89-2 2 .89 2 2 2z"/>
+                        </svg>
+                      </div>
+                    </Marker>
+                  ))}
                   
-                  {/* User Location Marker */}
+                  {/* User Location Marker (the blue dot) - Renders if userLocation is set and on current floor */}
                   {userLocation && userLocation.level === currentFloor && (
                     <Marker
                       longitude={userLocation.longitude}
@@ -468,12 +993,10 @@ export default function Home() {
                       anchor="center"
                     >
                       <div className="relative">
-                        {/* Pulsing effect */}
-                        <div className="absolute w-12 h-12 rounded-full bg-primary opacity-30 animate-ping" style={{ top: "-24px", left: "-24px" }}></div>
-                        {/* User marker */}
-                        <div className="relative w-8 h-8 bg-primary text-white rounded-full flex items-center justify-center z-10" style={{ top: "-16px", left: "-16px" }}>
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.121 17.804A13.937 13.937 0 0112 16c2.5 0 4.847.655 6.879 1.804M15 10a3 3 0 11-6 0 3 3 0 016 0zm6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        <div className="absolute w-12 h-12 rounded-full opacity-30 animate-ping bg-primary" style={{ top: "-24px", left: "-24px" }}></div>
+                        <div className="flex relative z-10 justify-center items-center w-8 h-8 text-white rounded-full bg-primary" style={{ top: "-16px", left: "-16px" }}>
+                          <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5.121 17.804A13.937 13.937 0 0112 16c2.5 0 4.847.655 6.879 1.804M15 10a3 3 0 11-6 0 3 3 0 016 0zm6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                           </svg>
                         </div>
                       </div>
@@ -493,42 +1016,14 @@ export default function Home() {
                       className="z-50"
                     >
                       <div className="p-2 max-w-xs">
-                        <h3 className="font-bold text-sm">{selectedEvent.title}</h3>
-                        <p className="text-xs mt-1">{selectedEvent.description}</p>
-                        <div className="text-xs mt-2 opacity-70">
-                          <div>
-                            Start: {new Date(selectedEvent.startTime).toLocaleString()}
-                          </div>
-                          <div>
-                            End: {new Date(selectedEvent.endTime).toLocaleString()}
-                          </div>
-                        </div>
+                        <p className="text-sm font-bold">
+                          {selectedEvent.title} (Level {selectedEvent.location.level})
+                        </p>
                       </div>
+                      
                     </Popup>
                   )}
 
-                  {/* User Location Popup */}
-                  {userLocation && userLocation.level === currentFloor && (
-                    <Popup
-                      longitude={userLocation.longitude}
-                      latitude={userLocation.latitude}
-                      anchor="bottom"
-                      closeButton={true}
-                      closeOnClick={false}
-                      onClose={() => setUserLocation(null)}
-                      offset={10}
-                      className="z-40"
-                    >
-                      <div className="p-2 max-w-xs">
-                        <h3 className="font-bold text-sm">Your Location</h3>
-                        <p className="text-xs mt-1">
-                          You are here on level {userLocation.level}
-                        </p>
-                      </div>
-                    </Popup>
-                  )}
-                  
-                  {/* Regular Hover Popup */} 
                   {hoverInfo && !selectedEvent && (
                     <Popup
                       longitude={hoverInfo.longitude}
@@ -536,18 +1031,17 @@ export default function Home() {
                       anchor="bottom"
                       closeButton={false}
                       closeOnClick={false}
-                      offset={10} // Offset popup slightly from cursor
-                      className="z-50" // Ensure popup is on top
+                      offset={10} 
+                      className="z-50" 
                     >
-                      <div className="text-sm font-semibold bg-neutral backdrop-blur-sm p-1 rounded shadow text-neutral-content">
-                        {hoverInfo.featureName}
+                      <div className="p-2 max-w-xs text-sm font-semibold rounded">
+                        {hoverInfo.featureName}{hoverInfo.level ? ` (Level ${hoverInfo.level})` : ''}
                       </div>
                     </Popup>
                   )}
                 </Map>
-                {/* Floor Level Indicator - Moved outside controls */}
-                 <div className="absolute bottom-4 right-4 z-10">
-                   <div className="badge badge-lg badge-neutral shadow-md"> 
+                 <div className="absolute right-4 bottom-10 z-10">
+                   <div className="shadow-md badge badge-lg badge-neutral"> 
                       {`Level ${currentFloor}`}
                 </div>
               </div>
@@ -555,256 +1049,82 @@ export default function Home() {
           )}
         </div>
 
-        {/* Live Events Feed */}
-        <div className="mt-12">
-          <h2 className="text-2xl font-bold mb-6">Live Event Feed</h2>
-          <div className="space-y-4">
-            {events.length === 0 ? (
-              <div className="alert">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" className="stroke-info shrink-0 w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                <span>No events scheduled. Check back later!</span>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {events
-                  // Sort events: currently happening first, then upcoming (closest start time first)
-                  .sort((a, b) => {
-                    const now = new Date().getTime();
-                    const aStart = new Date(a.startTime).getTime();
-                    const aEnd = new Date(a.endTime).getTime();
-                    const bStart = new Date(b.startTime).getTime();
-                    const bEnd = new Date(b.endTime).getTime();
-                    
-                    // If a is happening now and b is not
-                    if (aStart <= now && now <= aEnd && (bStart > now || now > bEnd)) return -1;
-                    // If b is happening now and a is not
-                    if (bStart <= now && now <= bEnd && (aStart > now || now > aEnd)) return 1;
-                    // If both are happening now or both are upcoming, sort by start time
-                    return aStart - bStart;
-                  })
-                  // Filter out past events
-                  .filter(event => new Date(event.endTime) > new Date())
-                  // Take only the first 4 events
-                  .slice(0, 4)
-                  .map(event => {
-                    const now = new Date();
-                    const startTime = new Date(event.startTime);
-                    const endTime = new Date(event.endTime);
-                    const isHappening = startTime <= now && now <= endTime;
-                    const startTimeText = startTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                    const eventDate = startTime.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
-                    
-                    return (
-                      <div key={event.id} className="card bg-base-100 shadow-lg hover:shadow-xl transition-shadow">
-                        <div className="card-body">
-                          {isHappening && (
-                            <div className="badge badge-accent gap-2 mb-2">
-                              <span className="relative flex h-2 w-2">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-content opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-2 w-2 bg-accent-content"></span>
-                              </span>
-                              Happening Now
-                            </div>
-                          )}
-                          <h3 className="card-title">{event.title}</h3>
-                          <p className="text-sm opacity-80 line-clamp-2">{event.description}</p>
-                          <div className="flex flex-col mt-2 text-sm">
-                            <div className="flex items-center gap-2">
-                              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                              </svg>
-                              <span>{eventDate} at {startTimeText}</span>
-                            </div>
-                            <div className="flex items-center gap-2 mt-1">
-                              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                              </svg>
-                              <span>Level {event.location.level}</span>
-                            </div>
-                          </div>
-                          <div className="card-actions justify-end mt-3">
-                            <button 
-                              className="btn btn-sm btn-primary" 
-                              onClick={() => {
-                                setCurrentFloor(event.location.level);
-                                setSelectedEvent(event);
-                              }}
-                            >
-                              View on Map
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })
-                }
-              </div>
-            )}
-            {events.length > 0 && (
-              <div className="flex justify-center mt-6">
-                <Link href="/events" className="btn btn-outline">
+        {/* Add a link to the new /events page */}
+        {/*
+        <div className="mt-12 text-center">
+          <Link href="/events" className="btn btn-lg btn-outline btn-primary">
                   View All Events
                 </Link>
-              </div>
-            )}
-          </div>
         </div>
+        */}
 
-        {/* User Location Info Card - show when user location is available */}
-        {userLocation && (
-          <div className="mt-6">
-            <div className="alert alert-info shadow-lg">
-              <svg xmlns="http://www.w3.org/2000/svg" className="stroke-current flex-shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+        {/* FAB Container */}
+        <div className="flex fixed bottom-6 left-6 z-30 flex-col gap-2 items-start">
+          {/* Action Buttons - Shown when FAB is open */}
+          {isFabOpen && (
+            <div className="flex flex-col gap-2 items-start mb-2">
+              <Link href="/events" className="gap-2 shadow-md backdrop-blur-sm btn btn-sm btn-outline bg-base-100/80">
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /> {/* Icon for "View Events" - e.g., info or list icon */}
+                </svg>
+                View Events
+              </Link>
+              {/* <Link href="/qr-generator" className="gap-2 shadow-md backdrop-blur-sm btn btn-sm btn-outline bg-base-100/80">
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+                </svg>
+                Generate QR
+              </Link> */}
+                  <button
+                onClick={() => { setIsScanning(true); setIsFabOpen(false); }}
+                className="gap-2 shadow-md btn btn-sm btn-primary"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                Scan Location
+                  </button>
+            </div>
+          )}
+
+          {/* Main FAB Button */}
+          <button
+            onClick={() => setIsFabOpen(!isFabOpen)}
+            className="shadow-xl btn btn-primary btn-circle btn-lg"
+            aria-label="Toggle actions menu"
+          >
+            {isFabOpen ? (
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" /></svg>
+            )}
+          </button>
+        </div>
+        {/* Toast Notification for Location Detected */}
+        {activeToast && (
+          <div className="z-50 p-4 toast toast-bottom toast-center">
+            <div className={`alert alert-${activeToast.type} shadow-lg`}>
               <div>
-                <h3 className="font-bold">Location Detected</h3>
-                <div className="text-xs">
-                  Your current position is displayed on Level {userLocation.level}
-                </div>
+                <svg xmlns="http://www.w3.org/2000/svg" className="flex-shrink-0 w-6 h-6 stroke-current" fill="none" viewBox="0 0 24 24">
+                  {activeToast.type === 'info' && <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />}
+                  {activeToast.type === 'success' && <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />}
+                  {/* Add other icons for error/warning if needed */}
+                </svg>
+                <span>{activeToast.message}</span>
               </div>
-              <button 
-                className="btn btn-sm" 
-                onClick={() => {
-                  if (userLocation.level !== currentFloor) {
-                    setCurrentFloor(userLocation.level);
-                  }
-                }}
-              >
-                Go to Level
-              </button>
-              <button 
-                className="btn btn-sm btn-ghost" 
-                onClick={() => setUserLocation(null)}
-              >
-                Clear
-              </button>
             </div>
           </div>
         )}
       </main>
-
-        {/* Footer */} 
-        <footer className="footer footer-center p-10 bg-base-300 text-base-content border-t border-base-300 mt-auto">
-           {/* ... footer content ... */} 
-        </footer>
-      </div> 
-      
-      {/* Sidebar Content */} 
-      <div className="drawer-side z-40"> 
-        <label htmlFor="sidebar-drawer" aria-label="close sidebar" className="drawer-overlay"></label> 
-        {/* Sidebar Menu */} 
-        <div className="menu p-4 w-64 min-h-full bg-base-100 text-base-content flex flex-col gap-2 overflow-y-auto">
-          {/* Title */}
-          <h3 className="text-lg font-semibold mb-2">Map Filters</h3>
-          
-          {/* --- Floor Level Controls --- */}
-          <div className="collapse collapse-arrow border border-base-300 bg-base-100">
-            <input type="checkbox" defaultChecked /> 
-            <div className="collapse-title text-sm font-semibold text-base-content">
-              Floor Level
-            </div>
-            <div className="collapse-content">
-              <div className="flex flex-col gap-1 pt-2">
-                {floors.length > 0 ? floors.map((floor) => (
-                  <button
-                    key={floor}
-                    onClick={() => setCurrentFloor(floor)}
-                    className={`btn btn-xs ${ 
-                      currentFloor === floor ? 'btn-primary' : 'btn-ghost'
-                    }`}
-                  >
-                    {`Level ${floor}`}
-                  </button>
-                )) : <span className="text-xs text-base-content/60">No levels found</span>}
-              </div>
-            </div>
-          </div>
-
-          {/* --- Places Filter (Radio Buttons - Dynamic) --- */}
-          <div className="collapse collapse-arrow border border-base-300 bg-base-100">
-            <input type="checkbox" defaultChecked /> 
-            <div className="collapse-title text-sm font-semibold text-base-content">
-              Filter by Place
-            </div>
-            <div className="collapse-content">
-              <div className="flex flex-col gap-1 pt-2">
-                 {/* "Show All" Option */} 
-                 <div className="form-control">
-                  <label className="label cursor-pointer py-0 px-1 justify-start gap-2">
-                    <input 
-                      type="radio" 
-                      name="amenity-filter"
-                      value="__ALL__"
-                      checked={filterAmenity === null}
-                      onChange={handleAmenityFilterChange} 
-                      className="radio radio-xs radio-primary" 
-                    />
-                    <span className="label-text text-xs font-medium">Show All</span> 
-                  </label>
-                </div>
-                 {/* Dynamic Amenity Options based on current level */} 
-                 {amenitiesOnCurrentLevel.length > 0 ? (
-                    amenitiesOnCurrentLevel.map(amenity => (
-                      <div className="form-control" key={amenity}>
-                        <label className="label cursor-pointer py-0 px-1 justify-start gap-2">
-                          <input 
-                            type="radio" 
-                            name="amenity-filter"
-                            value={amenity}
-                            checked={filterAmenity === amenity}
-                            onChange={handleAmenityFilterChange} 
-                            className="radio radio-xs radio-primary" 
-                          />
-                          <span className="label-text capitalize text-xs">{amenity.replace('_', ' ')}</span> 
-                        </label>
-                      </div>
-                    ))
-                 ) : (
-                   <span className="text-xs text-base-content/60 italic px-1">No amenities found on this level.</span>
-                 )}
-              </div>
-            </div>
-          </div>
-
-          {/* --- Others Filter (Renamed & Added Utility Toggle) --- */}
-          <div className="collapse collapse-arrow border border-base-300 bg-base-100">
-            <input type="checkbox" /> 
-            <div className="collapse-title text-sm font-semibold text-base-content">
-              Others {/* Renamed title */}
-            </div>
-            <div className="collapse-content">
-              <div className="flex flex-col gap-1 pt-2">
-                 {/* Service paths checkbox */}
-                 <div className="form-control">
-                  <label className="label cursor-pointer py-0 px-1 justify-start gap-2">
-                    <input 
-                      type="checkbox" 
-                      name="showServicePaths"
-                      checked={filterOptions.showServicePaths}
-                      onChange={handleOptionsChange} 
-                      className="checkbox checkbox-xs checkbox-primary" 
-                    />
-                    <span className="label-text text-xs">Show Service Paths</span> 
-                  </label>
-                </div>
-                 {/* Utilities checkbox */}
-                 <div className="form-control">
-                  <label className="label cursor-pointer py-0 px-1 justify-start gap-2">
-                    <input 
-                      type="checkbox" 
-                      name="showUtilities" // Matches state key
-                      checked={filterOptions.showUtilities}
-                      onChange={handleOptionsChange} 
-                      className="checkbox checkbox-xs checkbox-primary" 
-                    />
-                    <span className="label-text text-xs">Show Utilities</span> 
-                  </label>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense fallback={<div className="flex flex-grow justify-center items-center h-screen"><span className="loading loading-spinner loading-lg text-primary"></span><p className="ml-4 text-lg">Loading page...</p></div>}>
+      <HomePageContent />
+    </Suspense>
   );
 }

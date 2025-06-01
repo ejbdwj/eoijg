@@ -1,4 +1,4 @@
-# AppVenture Pathfinding Project
+# AppVenture NUSH Pathfinder
 
 Map by Level             |  Pathfinding
 :-------------------------:|:-------------------------:
